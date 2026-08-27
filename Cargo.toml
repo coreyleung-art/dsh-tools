@@ -1,0 +1,20 @@
+[package]
+name = "dsh-tools"
+version = "1.4.2"
+edition = "2021"
+description = "黑板固化工具集（Rust）：bb-read 看黑板摘要 / bb-sub 订阅器 / task-handoff 任务移交"
+
+[dependencies]
+serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[[bin]]
+name = "dsh-tools"
+path = "src/main.rs"
