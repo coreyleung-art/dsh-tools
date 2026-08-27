@@ -222,8 +222,105 @@ pub fn run(args: &[String]) -> i32 {
             println!("  ✅ 已推送（若 GitHub 443 被墙，请用 repo setup 走 SSH）");
             0
         }
-        "sync" | "status" => {
-            println!("  TODO: {} 子命令（下一增量）", sub);
+        "sync" => {
+            // 手动触发 Gitee 同步 + 可选触发 Actions
+            let mut repo_path = String::new();
+            let mut branch = String::new();
+            let mut trigger_actions = true;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--repo" => { i += 1; if i < args.len() { repo_path = args[i].clone(); } }
+                    "--branch" => { i += 1; if i < args.len() { branch = args[i].clone(); } }
+                    "--no-actions" => trigger_actions = false,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if repo_path.is_empty() { println!("用法: dsh-tools repo sync --repo <路径>"); return 2; }
+            if branch.is_empty() {
+                branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"], &repo_path).unwrap_or_else(|_| "main".to_string());
+            }
+            println!("═══ dsh-tools repo sync ═══");
+            // 读凭据
+            let creds_file = format!("{}/.dsh/repo-pipeline.json", home_dir());
+            let creds = std::fs::read_to_string(&creds_file).unwrap_or_default();
+            let creds_json: serde_json::Value = serde_json::from_str(&creds).unwrap_or(serde_json::Value::Null);
+            let gitee_user = creds_json.get("giteeUser").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let gitee_token = creds_json.get("giteeToken").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if gitee_user.is_empty() || gitee_token.is_empty() {
+                println!("  ⚠️ 凭据文件未配置 giteeUser/giteeToken（~/.dsh/repo-pipeline.json），无法推送 Gitee");
+                println!("  格式: {}", "{\"giteeUser\":\"U\",\"giteeToken\":\"T\"}");
+                return 1;
+            }
+            let repo_name = Path::new(&repo_path).file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let push_url = format!("https://{}:{}@gitee.com/{}/{}.git", gitee_user, gitee_token, gitee_user, repo_name);
+            match run_cmd("git", &["-C", &repo_path, "push", &push_url, &format!("{}:{}", branch, branch)], &repo_path) {
+                Ok(_) => println!("  ✅ Gitee 推送成功: {}/{} ({})", gitee_user, repo_name, branch),
+                Err(e) => println!("  ❌ Gitee 推送失败: {}", e),
+            }
+            if trigger_actions {
+                // 触发 GitHub Actions 的 Sync to Gitee 工作流
+                let owner = run_cmd("git", &["-C", &repo_path, "remote", "get-url", "origin"], &repo_path)
+                    .ok().map(|u| {
+                        let u2 = u.replace("git@github.com:", "").replace("https://github.com/", "");
+                        u2.trim_end_matches(".git").to_string()
+                    }).unwrap_or_default();
+                if !owner.is_empty() {
+                    match run_cmd("gh", &["workflow", "run", "Sync to Gitee", "--repo", &owner], ".") {
+                        Ok(_) => println!("  ✅ Actions 同步工作流已触发: {}", owner),
+                        Err(e) => println!("  ⚠️ 触发 Actions 失败: {}", e),
+                    }
+                }
+            }
+            0
+        }
+        "status" => {
+            let mut repo_path = ".".to_string();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--repo" => { i += 1; if i < args.len() { repo_path = args[i].clone(); } }
+                    _ => {}
+                }
+                i += 1;
+            }
+            println!("═══ dsh-tools repo status ═══");
+            // 本地分支
+            let branch = run_cmd("git", &["rev-parse", "--abbrev-ref", "HEAD"], &repo_path).unwrap_or_else(|_| "?".to_string());
+            println!("  本地分支: {}", branch);
+            // remotes
+            let remotes = run_cmd("git", &["remote", "-v"], &repo_path).unwrap_or_default();
+            let mut has_github = false;
+            let mut has_gitee = false;
+            for line in remotes.lines() {
+                if line.contains("github.com") { has_github = true; }
+                if line.contains("gitee.com") { has_gitee = true; }
+            }
+            println!("  GitHub remote: {}", if has_github { "✅" } else { "❌" });
+            println!("  Gitee remote:  {}", if has_gitee { "✅" } else { "❌" });
+            // 远端领先/落后（fetch 后比较）
+            let _ = run_cmd("git", &["fetch", "--all"], &repo_path);
+            let ahead = run_cmd("git", &["rev-list", "--count", &format!("{}..origin/{}", branch, branch)], &repo_path).unwrap_or_else(|_| "?".to_string());
+            let behind = run_cmd("git", &["rev-list", "--count", &format!("origin/{}..{}", branch, branch)], &repo_path).unwrap_or_else(|_| "?".to_string());
+            println!("  与 origin/{} 比较: ahead={} behind={}", branch, ahead, behind);
+            // Actions 最近运行（若有 gh）
+            if has_github {
+                let owner = run_cmd("git", &["remote", "get-url", "origin"], &repo_path).ok().map(|u| {
+                    let u2 = u.replace("git@github.com:", "").replace("https://github.com/", "");
+                    u2.trim_end_matches(".git").to_string()
+                }).unwrap_or_default();
+                if !owner.is_empty() {
+                    let runs = run_cmd("gh", &["run", "list", "--repo", &owner, "--limit", "5"], ".");
+                    match runs {
+                        Ok(r) => {
+                            println!("  Actions 最近运行:");
+                            for line in r.lines().take(5) { println!("    {}", line); }
+                        }
+                        Err(e) => println!("  ⚠️ Actions 查询失败: {}", e),
+                    }
+                }
+            }
             0
         }
         _ => {
