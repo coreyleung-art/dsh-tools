@@ -14,6 +14,7 @@ mod workflow;
 mod bus_bridge;
 mod deploy_check;
 mod version;
+mod repo;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -482,6 +483,7 @@ fn main() {
         println!("  workflow <workflow.json>   # 串行/并行编排（token 预算门禁）");
         println!("  bus-bridge --port 8791 --queue ~/.dsh/bus-queue  # 跨设备总线桥");
         println!("  version --type fix|feat|breaking --desc '描述' [--repo 路径] [--dry-run]  # 自动化版本管理");
+        println!("  repo setup/push/sync/status  # GitHub/Gitee 双仓与版本全链路");
         return;
     }
     match args[1].as_str() {
@@ -519,6 +521,9 @@ fn main() {
         }
         "version" => {
             std::process::exit(version::run(&args[2..]));
+        }
+        "repo" => {
+            std::process::exit(repo::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }

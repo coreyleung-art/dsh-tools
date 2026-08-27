@@ -1,6 +1,6 @@
 [package]
 name = "dsh-tools"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 description = "黑板固化工具集（Rust）：bb-read 看黑板摘要 / bb-sub 订阅器 / task-handoff 任务移交"
 
