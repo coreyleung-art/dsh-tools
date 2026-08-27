@@ -15,6 +15,7 @@ mod bus_bridge;
 mod deploy_check;
 mod version;
 mod repo;
+mod ledger;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -484,6 +485,7 @@ fn main() {
         println!("  bus-bridge --port 8791 --queue ~/.dsh/bus-queue  # 跨设备总线桥");
         println!("  version --type fix|feat|breaking --desc '描述' [--repo 路径] [--dry-run]  # 自动化版本管理");
         println!("  repo setup/push/sync/status  # GitHub/Gitee 双仓与版本全链路");
+        println!("  ledger [--json] [--repo 路径]  # 工具台账自动化（扫 git tag + 漂移检测）");
         return;
     }
     match args[1].as_str() {
@@ -524,6 +526,9 @@ fn main() {
         }
         "repo" => {
             std::process::exit(repo::run(&args[2..]));
+        }
+        "ledger" => {
+            std::process::exit(ledger::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
