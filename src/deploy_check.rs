@@ -6,11 +6,195 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use serde::Deserialize;
 
 /// 一个待检查项的结果
 struct CheckItem {
     level: &'static str, // "OK" / "WARN" / "FAIL"
     msg: String,
+}
+
+// ── 可扩展检查清单（R011 v2：新问题 → 加清单文件，无需改代码）──
+// 清单目录: <dsh-tools>/checks/*.json（或 --checks-dir 指定）
+// 每条清单含 checks[]，restart-guard 自动加载合并执行。
+// 新增检查：在 checks/ 下加 JSON 文件即可（含 file-content / package-json / path-exists 三种类型）。
+
+/// 清单检查项
+#[derive(Deserialize, Clone)]
+struct ManifestCheck {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    check_type: String,
+    #[serde(default)]
+    target: String,       // 文件名或 glob（file-content / path-exists）
+    #[serde(default)]
+    mode: String,         // fail-if / warn-if / warn-if-missing
+    #[serde(default)]
+    pattern: String,      // 正则（file-content）
+    #[serde(default)]
+    exclude_if: Vec<String>, // 命中任一即跳过（file-content）
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    require: serde_json::Value,   // package.json 键值要求
+    #[serde(default)]
+    condition: serde_json::Value, // package-json 条件
+    #[serde(default)]
+    when: String,         // 触发条件（如 "lib/index.js contains export"）
+}
+
+/// 清单文件
+#[derive(Deserialize)]
+struct Manifest {
+    id: String,
+    name: String,
+    #[serde(default)]
+    checks: Vec<ManifestCheck>,
+}
+
+/// 加载 checks/ 目录下所有清单（合并）
+fn load_manifests(checks_dir: &Path) -> Vec<ManifestCheck> {
+    let mut all: Vec<ManifestCheck> = Vec::new();
+    if !checks_dir.is_dir() { return all; }
+    if let Ok(entries) = std::fs::read_dir(checks_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "json").unwrap_or(false) {
+                if let Ok(txt) = std::fs::read_to_string(&p) {
+                    if let Ok(m) = serde_json::from_str::<Manifest>(&txt) {
+                        for c in m.checks { all.push(c); }
+                    }
+                }
+            }
+        }
+    }
+    all
+}
+
+/// 执行清单检查（针对单个插件目录）
+fn run_manifest_checks(dir: &Path, checks: &[ManifestCheck], out: &mut Vec<CheckItem>) {
+    for c in checks {
+        match c.check_type.as_str() {
+            "file-content" => {
+                // 匹配 lib/ 下目标文件
+                let lib_dir = dir.join("lib");
+                if !lib_dir.is_dir() { continue; }
+                let mut matched = false;
+                if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+                    for e in entries.flatten() {
+                        let p = e.path();
+                        let fname = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+                        // glob 简化匹配：* 前缀/后缀
+                        let target_ok = if c.target.contains('*') {
+                            let pat = c.target.replace('*', "");
+                            fname.contains(&pat)
+                        } else {
+                            fname == c.target
+                        };
+                        if !target_ok { continue; }
+                        if let Ok(src) = std::fs::read_to_string(&p) {
+                            // 客户端文件跳过
+                            if src.contains("__ModuleLoader__") || src.contains("window.") { continue; }
+                            matched = true;
+                            // exclude_if 命中任一即跳过
+                            let excluded = c.exclude_if.iter().any(|x| src.contains(x));
+                            if excluded { continue; }
+                            // 正则匹配（简单子串+锚点，无 regex crate 用简化）
+                            let pat = c.pattern.clone();
+                            let hit = if pat.starts_with("(?<!") {
+                                // 简化 lookbehind：取 pattern 中最后的裸调用部分
+                                simple_bare_call_match(&src, &pat)
+                            } else {
+                                src.contains(&pat)
+                            };
+                            let level = if c.mode == "fail-if" { if hit { "FAIL" } else { "OK" } } else { if hit { "WARN" } else { "OK" } };
+                            // require 条件：package.json 键值要求（如 esm-type-module 要求 type=module）。
+                            // 语义：命中 pattern 且「未满足 require」→ 报 FAIL（例：有 export 但 type≠module → FAIL）
+                            let mut require_met = false;
+                            if let Some(req) = c.require.as_object() {
+                                if let (Some(rf), Some(k)) = (req.get("file").and_then(|v| v.as_str()), req.get("key").and_then(|v| v.as_str())) {
+                                    let req_pkg = dir.join(rf);
+                                    if let Ok(txt2) = std::fs::read_to_string(&req_pkg) {
+                                        if let Ok(pkg2) = serde_json::from_str::<serde_json::Value>(&txt2) {
+                                            if let Some(exp) = req.get("equals").and_then(|v| v.as_str()) {
+                                                let actual = pkg2.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                                                require_met = actual == exp;
+                                            } else {
+                                                require_met = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                require_met = true; // 无 require 条件 → 命中即报
+                            }
+                            if hit && !require_met {
+                                out.push(CheckItem { level, msg: format!("[{}] {}", fname, c.message) });
+                            }
+                        }
+                    }
+                }
+                if !matched && c.mode.starts_with("fail") {
+                    out.push(CheckItem { level: "WARN", msg: format!("清单检查 {}: 未匹配目标 {}（跳过）", c.id, c.target) });
+                }
+            }
+            "package-json" => {
+                let pkg_path = dir.join("package.json");
+                if let Ok(txt) = std::fs::read_to_string(&pkg_path) {
+                    if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&txt) {
+                        // condition: peerDependencies empty
+                        if let Some(cond) = c.condition.as_object() {
+                            if let Some(k) = cond.get("key").and_then(|v| v.as_str()) {
+                                let empty = cond.get("empty").and_then(|v| v.as_bool()).unwrap_or(false);
+                                let val = pkg.get(k);
+                                let is_empty = val.map(|v| v.as_object().map(|o| o.is_empty()).unwrap_or(true)).unwrap_or(true);
+                                if empty && is_empty {
+                                    out.push(CheckItem { level: if c.mode == "warn-if" { "WARN" } else { "FAIL" }, msg: format!("[{}] {}", "package.json", c.message) });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            "path-exists" => {
+                let target_path = dir.join(&c.target);
+                let exists = target_path.exists();
+                if !exists && c.mode == "warn-if-missing" {
+                    out.push(CheckItem { level: "WARN", msg: format!("[{}] {}", dir.display(), c.message) });
+                } else if exists {
+                    out.push(CheckItem { level: "OK", msg: format!("[{}] {} 存在", dir.display(), c.target) });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 简化裸调用匹配（处理 (?<!...)(join|homedir|require)\( 类 pattern）
+/// 检查目标符号前一个非空白字符是否成员访问（. / 标识符）
+fn simple_bare_call_match(src: &str, pat: &str) -> bool {
+    // 从 pattern 提取符号名（最后的 |... 或 直接符号）
+    let syms: Vec<&str> = if pat.contains('|') {
+        pat.split('(').next().unwrap_or("").split('|').last().map(|s| s.trim_start_matches(')')).map(|s| s.trim_end()).unwrap_or("").split('|').collect()
+    } else {
+        vec![pat.trim_end_matches('(').trim()]
+    };
+    // 简化：找每个符号的 ( 调用，判断前面非成员
+    let mut found = false;
+    for sym in syms {
+        let sym = sym.trim();
+        if sym.is_empty() { continue; }
+        let mut search_from = 0;
+        while let Some(pos) = src[search_from..].find(&format!("{}(", sym)) {
+            let abs = search_from + pos;
+            let prev = src[..abs].trim_end().chars().last().unwrap_or(' ');
+            let is_member = matches!(prev, '.' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '$');
+            if !is_member { found = true; break; }
+            search_from = abs + sym.len() + 1;
+        }
+    }
+    found
 }
 
 /// deploy-check 主入口
@@ -441,24 +625,42 @@ pub fn restart_guard(args: &[String]) -> i32 {
     let mut runtime = String::new();
     let mut profile_arg: Option<String> = None;
     let mut json_out = false;
+    let mut checks_dir = String::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--runtime" => { i += 1; if i < args.len() { runtime = args[i].clone(); } }
             "--profile" => { i += 1; if i < args.len() { profile_arg = Some(args[i].clone()); } }
             "--json" => { json_out = true; }
+            "--checks-dir" => { i += 1; if i < args.len() { checks_dir = args[i].clone(); } }
             s if !s.starts_with('-') => { dirs.push(s.to_string()); }
             _ => {}
         }
         i += 1;
     }
     if dirs.is_empty() {
-        println!("用法: dsh-tools restart-guard <插件目录>... [--runtime R] [--profile P] [--json]");
+        println!("用法: dsh-tools restart-guard <插件目录>... [--runtime R] [--profile P] [--json] [--checks-dir D]");
         println!("  CLD/DSH 重启前强制门：任一插件 FAIL → 禁止重启（沙箱先行，R011）");
+        println!("  --checks-dir: 可扩展检查清单目录（默认 <dsh-tools>/checks/*.json，新问题加清单文件即可）");
         return 1;
     }
     let runtime = if runtime.is_empty() { detect_runtime() } else { runtime };
     let nm = Path::new(&runtime).join("node_modules");
+
+    // 加载可扩展检查清单（默认 dsh-tools 旁 checks/ 目录，可用 --checks-dir 覆盖）
+    let manifest_dir = if !checks_dir.is_empty() {
+        Path::new(&checks_dir).to_path_buf()
+    } else {
+        // 从可执行文件旁找 checks/（dev: ../checks，安装: dist/../checks）
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|x| x.to_path_buf()));
+        let mut cand = exe_dir.clone().map(|d| d.join("checks"));
+        if let Some(c) = &cand { if !c.is_dir() { cand = exe_dir.map(|d| d.join("../checks")); } }
+        cand.unwrap_or_else(|| Path::new("checks").to_path_buf())
+    };
+    let manifests = load_manifests(&manifest_dir);
+    if !manifests.is_empty() {
+        println!("[INFO] 加载可扩展检查清单 {} 项（{}）", manifests.len(), manifest_dir.display());
+    }
 
     let mut checks: Vec<CheckItem> = Vec::new();
     for d in &dirs {
@@ -590,6 +792,9 @@ pub fn restart_guard(args: &[String]) -> i32 {
                 Err(_) => checks.push(CheckItem { level: "WARN", msg: format!("[{}] node 不可用，跳过加载实测", d) }),
             }
         }
+
+        // ⑫ 可扩展检查清单（R011 v2：新问题 → checks/*.json 追加，无需改代码）
+        run_manifest_checks(dir, &manifests, &mut checks);
     }
 
     // 汇总

@@ -1,0 +1,67 @@
+{
+  "id": "esm-cjs-hygiene",
+  "name": "ESM/CJS 卫生检查（2026-08-29 central-inbox 崩溃教训）",
+  "version": "2",
+  "added": "2026-08-29",
+  "source": "docs/pitfalls/2026-08-29-central-inbox-stale-code.md + nodebridge-sandbox-missed-mode.md",
+  "description": "固化的专项检查：新问题出现即追加清单文件，restart-guard 自动加载合并执行，无需改代码",
+  "checks": [
+    {
+      "id": "esm-type-module",
+      "name": "ESM 必须配 type:module",
+      "type": "file-content",
+      "target": "index.js",
+      "mode": "fail-if",
+      "pattern": "export ",
+      "require": { "file": "package.json", "key": "type", "equals": "module" },
+      "message": "lib/index.js 用 ESM export 但 package.json 缺 type:module（CJS 解析 → SyntaxError → 加载即崩）"
+    },
+    {
+      "id": "bare-require",
+      "name": "禁止裸 require（type:module 下未定义）",
+      "type": "file-content",
+      "target": "*.js",
+      "mode": "fail-if",
+      "pattern": "(?<![.\\w$])require(",
+      "exclude_if": ["createRequire", "node:module", "__ModuleLoader__", "window."],
+      "message": "裸 require( 在 ESM 下 ReferenceError（应用 createRequire 或 import）"
+    },
+    {
+      "id": "bare-join-homedir",
+      "name": "join/homedir 必须显式导入",
+      "type": "file-content",
+      "target": "*.js",
+      "mode": "fail-if",
+      "pattern": "(?<![.\\w$])(join|homedir)(",
+      "exclude_if": ["import { join", "import { homedir", "import * as", "node:path", "node:os", "__ModuleLoader__", "window."],
+      "message": "join/homedir 裸调用但未显式 import（ESM 下 ReferenceError）"
+    },
+    {
+      "id": "dead-require-shadow",
+      "name": "函数体内 require 遮蔽（死代码）",
+      "type": "file-content",
+      "target": "index.js",
+      "mode": "fail-if",
+      "pattern": "const\\s+\\w+\\s*=\\s*require(",
+      "exclude_if": ["createRequire", "node:module", "__ModuleLoader__", "window."],
+      "message": "函数体内 const x = require(...) 在 ESM 下 ReferenceError（openchronicle v0.1.4 教训）"
+    },
+    {
+      "id": "no-peer-deps",
+      "name": "ESM 插件需声明 peerDependencies",
+      "type": "package-json",
+      "mode": "warn-if",
+      "condition": { "key": "peerDependencies", "empty": true },
+      "when": "lib/index.js contains export",
+      "message": "peerDependencies 为空（注入服务 agentBus 等可能无法解析）"
+    },
+    {
+      "id": "nm-symlinks",
+      "name": "node_modules/@deepseek-ai 符号链接存在",
+      "type": "path-exists",
+      "target": "node_modules/@deepseek-ai",
+      "mode": "warn-if-missing",
+      "message": "无 node_modules/@deepseek-ai 符号链接（peer 依赖可能解析失败）"
+    }
+  ]
+}
