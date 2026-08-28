@@ -133,7 +133,10 @@ pub fn run(args: &[String]) -> i32 {
                 let p = e.path();
                 if p.extension().map(|x| x == "js").unwrap_or(false) {
                     let fname = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
-                    match std::process::Command::new("node").args(["--check"]).arg(&p).output() {
+                    let node_bin = ["node", "/opt/homebrew/bin/node", "/usr/local/bin/node"]
+                        .iter().find(|c| std::process::Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
+                        .map(|s| s.to_string()).unwrap_or_else(|| "node".to_string());
+                    match std::process::Command::new(&node_bin).args(["--check"]).arg(&p).output() {
                         Ok(out) if out.status.success() => {
                             checks.push(CheckItem { level: "OK", msg: format!("[{}] 语法 OK", fname) });
                         }
@@ -422,5 +425,154 @@ fn check_bundle_order(profile_pkg: &str, checks: &mut Vec<CheckItem>) {
             }
             _ => {}
         }
+    }
+}
+
+/// restart-guard — CLD/DSH 重启前沙箱模拟强制门（R011）
+/// 用法: dsh-tools restart-guard <插件目录>... [--runtime R] [--profile P] [--json]
+/// 在 deploy-check 全部检测之上，追加「重启专属崩溃类」检测（2026-08-29 实战教训）：
+///   ⑧ type:module 检查（ESM export 但无 type:module → CJS 解析 SyntaxError → 插件加载即崩）
+///   ⑨ ESM 导入完整性（join/homedir/fs 等依赖 CJS 隐式全局 → ESM 下 ReferenceError）
+///   ⑩ node_modules 符号链接（agentBus 等 peer 依赖解析）
+///   ⑪ 模块加载实测（node import() 模拟 cordis 加载）
+/// 任一项 FAIL → 返回非 0（强制门：禁止重启）
+pub fn restart_guard(args: &[String]) -> i32 {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut runtime = String::new();
+    let mut profile_arg: Option<String> = None;
+    let mut json_out = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--runtime" => { i += 1; if i < args.len() { runtime = args[i].clone(); } }
+            "--profile" => { i += 1; if i < args.len() { profile_arg = Some(args[i].clone()); } }
+            "--json" => { json_out = true; }
+            s if !s.starts_with('-') => { dirs.push(s.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+    if dirs.is_empty() {
+        println!("用法: dsh-tools restart-guard <插件目录>... [--runtime R] [--profile P] [--json]");
+        println!("  CLD/DSH 重启前强制门：任一插件 FAIL → 禁止重启（沙箱先行，R011）");
+        return 1;
+    }
+    let runtime = if runtime.is_empty() { detect_runtime() } else { runtime };
+    let nm = Path::new(&runtime).join("node_modules");
+
+    let mut checks: Vec<CheckItem> = Vec::new();
+    for d in &dirs {
+        let dir = Path::new(d);
+        let pkg_path = dir.join("package.json");
+        checks.push(CheckItem { level: "INFO", msg: format!("══ restart-guard 审查: {}", dir.display()) });
+        if !dir.is_dir() {
+            checks.push(CheckItem { level: "FAIL", msg: format!("目录不存在: {}", dir.display()) });
+            continue;
+        }
+        // ⑧ type:module 检查（ESM export 必须配 type:module）
+        match std::fs::read_to_string(&pkg_path) {
+            Ok(txt) => {
+                if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&txt) {
+                    let t = pkg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    // 检测 lib/index.js 是否用 ESM 语法（export/import），而非 package.json 文本
+                    let main_js = dir.join("lib").join("index.js");
+                    let mut has_esm = false;
+                    if let Ok(main_txt) = std::fs::read_to_string(&main_js) {
+                        has_esm = main_txt.contains("export ") || main_txt.contains("import ");
+                    }
+                    if has_esm && t != "module" {
+                        checks.push(CheckItem { level: "FAIL", msg: format!("[{}] lib/index.js 用 ESM 语法但缺 type:module（CJS 解析 → SyntaxError → 加载即崩）", d) });
+                    } else if has_esm && t == "module" {
+                        checks.push(CheckItem { level: "OK", msg: format!("[{}] type:module + ESM 语法匹配", d) });
+                    } else if !has_esm && t == "module" {
+                        checks.push(CheckItem { level: "WARN", msg: format!("[{}] type:module 但 lib 无 ESM 语法（无害，仅提示）", d) });
+                    } else {
+                        checks.push(CheckItem { level: "OK", msg: format!("[{}] CJS 插件（无 ESM 语法）", d) });
+                    }
+                    // peerDependencies 非空（agentBus 等服务依赖声明）
+                    let peers = pkg.get("peerDependencies").and_then(|v| v.as_object()).map(|o| o.len()).unwrap_or(0);
+                    if peers == 0 && has_esm {
+                        checks.push(CheckItem { level: "WARN", msg: format!("[{}] peerDependencies 为空（注入服务可能无法解析，建议声明）", d) });
+                    } else if peers > 0 {
+                        checks.push(CheckItem { level: "OK", msg: format!("[{}] peerDependencies {} 项", d, peers) });
+                    }
+                } else {
+                    checks.push(CheckItem { level: "FAIL", msg: format!("[{}] package.json 解析失败", d) });
+                }
+            }
+            Err(e) => checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 读 package.json 失败: {}", d, e) }),
+        }
+        // ⑨⑩ lib/*.js ESM 导入完整性 + 符号链接
+        let lib_dir = dir.join("lib");
+        if lib_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&lib_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().map(|x| x == "js").unwrap_or(false) {
+                        if let Ok(src) = std::fs::read_to_string(&p) {
+                            let fname = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+                            // 检查 CJS 隐式全局依赖（join/homedir/fs 未导入却在 ESM 下用）
+                            for sym in ["join(", "homedir(", "require('fs')", "require(\"fs\")"] {
+                                if src.contains(sym) && !src.contains("import { homedir }") && !src.contains("import { join }") && !src.contains("import fs") && !src.contains("import * as fs") {
+                                    checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 用了 {} 但缺 ESM 导入（type:module 下 ReferenceError）", fname, sym) });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // node_modules/@deepseek-ai 符号链接
+            let nm_link = dir.join("node_modules").join("@deepseek-ai");
+            if nm_link.is_dir() {
+                let count = std::fs::read_dir(&nm_link).map(|r| r.flatten().count()).unwrap_or(0);
+                checks.push(CheckItem { level: "OK", msg: format!("[{}] node_modules/@deepseek-ai 符号链接 {} 个", d, count) });
+            } else {
+                checks.push(CheckItem { level: "WARN", msg: format!("[{}] 无 node_modules/@deepseek-ai 符号链接（peer 依赖可能解析失败）", d) });
+            }
+        }
+        // ⑪ 模块加载实测（node import() 模拟 cordis 加载）
+        let main_js = dir.join("lib").join("index.js");
+        if main_js.is_file() {
+            // node 路径探测：PATH → /opt/homebrew/bin → /usr/local/bin → CLD runtime
+            let node_bin = ["node", "/opt/homebrew/bin/node", "/usr/local/bin/node"]
+                .iter().find(|c| std::process::Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
+                .map(|s| s.to_string()).unwrap_or_else(|| "node".to_string());
+            let script = format!(
+                "import('{}').then(m => console.log('LOAD_OK:' + Object.keys(m).join(','))).catch(e => {{ console.log('LOAD_FAIL:' + (e.message||'').slice(0,120)); process.exit(1); }})",
+                main_js.display()
+            );
+            match std::process::Command::new(&node_bin).args(["-e", &script]).output() {
+                Ok(out) => {
+                    let out_txt = String::from_utf8_lossy(&out.stdout).to_string();
+                    if out.status.success() && out_txt.contains("LOAD_OK") {
+                        checks.push(CheckItem { level: "OK", msg: format!("[{}] 模块加载实测 OK: {}", d, out_txt.trim()) });
+                    } else {
+                        let err = String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("?").to_string();
+                        checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 模块加载实测失败: {}", d, err) });
+                    }
+                }
+                Err(_) => checks.push(CheckItem { level: "WARN", msg: format!("[{}] node 不可用，跳过加载实测", d) }),
+            }
+        }
+    }
+
+    // 汇总
+    let fail = checks.iter().filter(|c| c.level == "FAIL").count();
+    let warn = checks.iter().filter(|c| c.level == "WARN").count();
+    let ok = checks.iter().filter(|c| c.level == "OK").count();
+    for c in &checks {
+        if json_out {
+            println!("{{\"level\":\"{}\",\"msg\":\"{}\"}}", c.level, c.msg.replace('"', "\\\""));
+        } else {
+            println!("[{}] {}", c.level, c.msg);
+        }
+    }
+    println!("══ restart-guard 汇总: {} FAIL / {} WARN / {} OK ══", fail, warn, ok);
+    if fail > 0 {
+        println!("❌ 强制门: 存在 FAIL，禁止重启 CLD/DSH（R011 沙箱先行）");
+        1
+    } else {
+        println!("✅ 强制门: 通过，可重启（R011）");
+        0
     }
 }

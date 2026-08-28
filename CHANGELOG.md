@@ -1,3 +1,9 @@
+## v1.10.0 (2026-08-29)
+- **新增 restart-guard 重启强制门（R011）**: dsh-tools restart-guard <插件目录>...
+  - CLD/DSH 重启前沙箱模拟：deploy-check 全量检测 + 重启专属 4 项（type:module 匹配/ESM 导入完整性/符号链接/模块加载实测）
+  - 任一 FAIL → 返回 1 禁止重启（防止 2026-08-29 central-inbox 缺 type:module 加载即崩事故重演）
+  - node 自动探测（PATH → /opt/homebrew/bin → /usr/local/bin），不依赖调用者 PATH
+  - 实测：修复版 0 FAIL 放行 / 未修复版 5 FAIL 拦截
 # Changelog
 
 ## [1.9.0] - 2026-08-29
