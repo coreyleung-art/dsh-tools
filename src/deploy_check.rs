@@ -511,10 +511,46 @@ pub fn restart_guard(args: &[String]) -> i32 {
                     if p.extension().map(|x| x == "js").unwrap_or(false) {
                         if let Ok(src) = std::fs::read_to_string(&p) {
                             let fname = p.file_name().map(|x| x.to_string_lossy().to_string()).unwrap_or_default();
+                            // 跳过客户端 web 文件（__ModuleLoader__/window. 格式：浏览器 require("react") 是客户端模块系统，非宿主 ESM）
+                            if src.contains("__ModuleLoader__") || src.contains("window.") {
+                                continue;
+                            }
                             // 检查 CJS 隐式全局依赖（join/homedir/fs 未导入却在 ESM 下用）
+                            // 只匹配「裸函数调用」（前面是空白/括号/等号/冒号/逗号），排除成员调用（x.join( / a.b.join(）
+                            let joined_src = src.clone();
                             for sym in ["join(", "homedir(", "require('fs')", "require(\"fs\")"] {
-                                if src.contains(sym) && !src.contains("import { homedir }") && !src.contains("import { join }") && !src.contains("import fs") && !src.contains("import * as fs") {
-                                    checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 用了 {} 但缺 ESM 导入（type:module 下 ReferenceError）", fname, sym) });
+                                let base = if sym == "join(" { "join" } else if sym == "homedir(" { "homedir" } else { "require" };
+                                let mut found_bare = false;
+                                let mut search_from = 0;
+                                while let Some(pos) = joined_src[search_from..].find(sym) {
+                                    let abs = search_from + pos;
+                                    // 前一个非空白字符：若是 . 或字母数字_ 则为成员调用/标识符一部分，跳过
+                                    let prev_non_space = joined_src[..abs].trim_end().chars().last().unwrap_or(' ');
+                                    let is_member = matches!(prev_non_space, '.' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '$');
+                                    if !is_member { found_bare = true; break; }
+                                    search_from = abs + sym.len();
+                                }
+                                // 宽松匹配：import { join, dirname } 等多名字导入也算已导入
+                                let has_import = |sym: &str| -> bool {
+                                    src.contains(&format!("import {{ {} }}", sym)) ||       // import { join }
+                                    src.contains(&format!("import {{ {} ,", sym)) ||        // import { join, dirname }
+                                    src.contains(&format!("import {{ {} ,", sym)) ||        // 覆盖 import { join, ...}
+                                    src.lines().any(|l| l.contains("import") && l.contains(sym) && l.contains("node:path")) ||  // 从 node:path 导入含 sym
+                                    src.lines().any(|l| l.contains("import") && l.contains(sym) && l.contains("node:os"))       // 从 node:os 导入含 sym
+                                };
+                                if found_bare && base == "join" && !has_import("join") {
+                                    checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 用了裸 join( 但缺 ESM 导入（type:module 下 ReferenceError）", fname) });
+                                }
+                                if found_bare && base == "homedir" && !has_import("homedir") {
+                                    checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 用了裸 homedir( 但缺 ESM 导入（type:module 下 ReferenceError）", fname) });
+                                }
+                                if found_bare && base == "require" {
+                                    // require 可能是 createRequire 结果（module/node:module 显式导入），宽松判断
+                                    let has_create_require = src.contains("createRequire")
+                                        && (src.contains("node:module") || src.lines().any(|l| l.contains("import") && l.contains("createRequire")));
+                                    if !has_create_require {
+                                        checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 用了裸 require( 但缺 ESM 导入（type:module 下 ReferenceError）", fname) });
+                                    }
                                 }
                             }
                         }
