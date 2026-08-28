@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.9.0] - 2026-08-29
+
+### 新功能
+- BLACKBOARD_TOKEN 环境变量支持（所有 bb_* 请求带 X-Blackboard-Token 头，P1-1c）
+
 ## [1.8.0] - 2026-08-28
 
 ### 新功能

@@ -48,9 +48,16 @@ fn http_request(url: &str, method: &str, body: Option<&str>, timeout_secs: u64) 
         .map_err(|e| format!("set timeout: {}", e))?;
 
     let body = body.unwrap_or("");
+    // P1-1c: 黑板认证 token（环境变量 BLACKBOARD_TOKEN，空=不带）
+    let token = std::env::var("BLACKBOARD_TOKEN").unwrap_or_default();
+    let token_hdr = if token.is_empty() {
+        String::new()
+    } else {
+        format!("X-Blackboard-Token: {}\r\n", token)
+    };
     let req = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-        method, path, hostport, body.len(), body
+        "{} {} HTTP/1.1\r\nHost: {}\r\n{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        method, path, hostport, token_hdr, body.len(), body
     );
     stream.write_all(req.as_bytes()).map_err(|e| format!("write: {}", e))?;
     let mut resp = Vec::new();
