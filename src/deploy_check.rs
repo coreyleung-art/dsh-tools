@@ -831,6 +831,7 @@ pub fn restart_gate(args: &[String]) -> i32 {
     let mut rounds = 3i32;
     let mut hold = 8i32;
     let mut skip_stress = false;
+    let mut skip_sandbox = false;
     let mut checks_dir = String::new();
     let mut i = 0;
     while i < args.len() {
@@ -838,6 +839,7 @@ pub fn restart_gate(args: &[String]) -> i32 {
             "--rounds" => { i += 1; if i < args.len() { rounds = args[i].parse().unwrap_or(3); } }
             "--hold" => { i += 1; if i < args.len() { hold = args[i].parse().unwrap_or(8); } }
             "--skip-stress" => { skip_stress = true; }
+            "--skip-sandbox" => { skip_sandbox = true; }
             "--checks-dir" => { i += 1; if i < args.len() { checks_dir = args[i].clone(); } }
             s if !s.starts_with('-') => { dirs.push(s.to_string()); }
             _ => {}
@@ -852,8 +854,35 @@ pub fn restart_gate(args: &[String]) -> i32 {
             "/Users/coreyleung/dsh-plugin-openchronicle".to_string(),
         ];
     }
-    println!("══ restart-gate 统一重启强制门（R011 v2）══");
-    println!("阶段 1/2: restart-guard 静态检查（{} 插件）", dirs.len());
+    println!("══ restart-gate 统一重启强制门（R011 v3）══");
+    println!("阶段 0/3: 隔离小样本验证（cld-shell-sandbox-test，不动生产）");
+
+    // 阶段 0: 隔离小样本验证（沙箱先行最前端）
+    let mut sandbox_pass = true;
+    if !skip_sandbox {
+        let sandbox_script = "/Users/coreyleung/dsh-collab/scripts/cld-shell-sandbox-test.py";
+        let out = std::process::Command::new("python3")
+            .arg(sandbox_script)
+            .arg("--test").arg("all")
+            .output();
+        match out {
+            Ok(o) => {
+                let txt = String::from_utf8_lossy(&o.stdout).to_string();
+                for line in txt.lines().rev().take(6) {
+                    println!("  {}", line);
+                }
+                sandbox_pass = o.status.success();
+            }
+            Err(e) => {
+                println!("  ⚠️ 沙箱脚本不可用: {}", e);
+                sandbox_pass = false;
+            }
+        }
+    } else {
+        println!("阶段 0: 已跳过（--skip-sandbox）");
+    }
+
+    println!("阶段 1/3: restart-guard 静态检查（{} 插件）", dirs.len());
 
     // 阶段 1: 静态检查（复用 restart_guard 逻辑，收集结果不退出）
     let mut all_args = dirs.clone();
@@ -864,7 +893,7 @@ pub fn restart_gate(args: &[String]) -> i32 {
     // 阶段 2: 动态压测
     let mut stress_pass = true;
     if !skip_stress && static_pass {
-        println!("阶段 2/2: restart-stress-test 动态压测（{} 轮 × {}s）", rounds, hold);
+        println!("阶段 2/3: restart-stress-test 动态压测（{} 轮 × {}s）", rounds, hold);
         let stress_script = "/Users/coreyleung/dsh-collab/scripts/restart-stress-test.py";
         let port = 3110;
         let out = std::process::Command::new("python3")
@@ -893,10 +922,11 @@ pub fn restart_gate(args: &[String]) -> i32 {
 
     // 汇总
     println!("══ restart-gate 汇总 ══");
+    println!("  隔离小样本: {}", if skip_sandbox { "⏭️ 跳过" } else if sandbox_pass { "✅ PASS" } else { "❌ FAIL" });
     println!("  静态检查: {}", if static_pass { "✅ PASS" } else { "❌ FAIL" });
     println!("  动态压测: {}", if skip_stress { "⏭️ 跳过" } else if stress_pass { "✅ PASS" } else { "❌ FAIL" });
-    if static_pass && (skip_stress || stress_pass) {
-        println!("✅ restart-gate 通过：可安全重启（R011 v2）");
+    if sandbox_pass && static_pass && (skip_stress || stress_pass) {
+        println!("✅ restart-gate 通过：可安全重启（R011 v3）");
         0
     } else {
         println!("❌ restart-gate 未通过：禁止重启（修复后重跑）");

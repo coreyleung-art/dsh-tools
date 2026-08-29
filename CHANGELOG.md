@@ -1,3 +1,7 @@
+## v1.12.0 (2026-08-29)
+- **restart-gate v3**: 新增阶段 0 隔离小样本验证（cld-shell-sandbox-test，不动生产）
+  - 三阶段：0=隔离小样本（壳行为/模式对话框/KeepAlive）→ 1=静态检查 → 2=动态压测
+  - 参数 --skip-sandbox 可选跳过
 ## v1.11.0 (2026-08-29)
 - **新增 restart-gate 统一重启强制门（R011 v2）**: dsh-tools restart-gate
   - 阶段 1: restart-guard 静态检查（插件完整性）
