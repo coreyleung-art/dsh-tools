@@ -776,17 +776,21 @@ pub fn restart_guard(args: &[String]) -> i32 {
                 .iter().find(|c| std::process::Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
                 .map(|s| s.to_string()).unwrap_or_else(|| "node".to_string());
             let script = format!(
-                "import('{}').then(m => console.log('LOAD_OK:' + Object.keys(m).join(','))).catch(e => {{ console.log('LOAD_FAIL:' + (e.message||'').slice(0,120)); process.exit(1); }})",
+                "setTimeout(() => {{ console.log('APPLY_TIMEOUT'); process.exit(0); }}, 3000); import('{}').then(m => {{ if (typeof m.apply !== 'function') {{ console.log('LOAD_OK:' + Object.keys(m).join(',')); process.exit(0); }} try {{ const fakeCtx = {{ get: () => undefined, on: () => {{}}, effect: () => {{}}, provide: () => {{}}, inject: () => {{}}, model: () => {{}}, timer: () => {{}}, settings: () => {{}} }}; const r = m.apply(fakeCtx); console.log('APPLY_OK'); if (r && typeof r.then === 'function') r.then(() => process.exit(0)).catch(e => {{ console.log('APPLY_FAIL:' + (e.message||'').slice(0,150)); process.exit(1); }}); else process.exit(0); }} catch (e) {{ console.log('APPLY_FAIL:' + (e.message||'').slice(0,150)); process.exit(1); }} }}).catch(e => {{ console.log('LOAD_FAIL:' + (e.message||'').slice(0,120)); process.exit(1); }})",
                 main_js.display()
             );
             match std::process::Command::new(&node_bin).args(["-e", &script]).output() {
                 Ok(out) => {
                     let out_txt = String::from_utf8_lossy(&out.stdout).to_string();
-                    if out.status.success() && out_txt.contains("LOAD_OK") {
-                        checks.push(CheckItem { level: "OK", msg: format!("[{}] 模块加载实测 OK: {}", d, out_txt.trim()) });
+                    let err_txt = String::from_utf8_lossy(&out.stderr).to_string();
+                    if out.status.success() && (out_txt.contains("LOAD_OK") || out_txt.contains("APPLY_OK")) {
+                        checks.push(CheckItem { level: "OK", msg: format!("[{}] 模块加载+apply 实测 OK: {}", d, out_txt.trim()) });
                     } else {
-                        let err = String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("?").to_string();
-                        checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 模块加载实测失败: {}", d, err) });
+                        // 优先取 stdout 的 APPLY_FAIL/LOAD_FAIL 消息，其次 stderr
+                        let fail_msg = out_txt.lines().find(|l| l.contains("FAIL")).map(|l| l.to_string())
+                            .or_else(|| err_txt.lines().next().map(|l| l.to_string()))
+                            .unwrap_or_else(|| "?".to_string());
+                        checks.push(CheckItem { level: "FAIL", msg: format!("[{}] 模块加载/apply 实测失败: {}", d, fail_msg) });
                     }
                 }
                 Err(_) => checks.push(CheckItem { level: "WARN", msg: format!("[{}] node 不可用，跳过加载实测", d) }),
