@@ -525,6 +525,10 @@ fn main() {
             let code = deploy_check::restart_guard(&args[2..]);
             std::process::exit(code);
         }
+        "restart-gate" => {
+            let code = deploy_check::restart_gate(&args[2..]);
+            std::process::exit(code);
+        }
         "agent-msg" => cmd_agent_msg(&args[2..]),
         "agent-thread" => cmd_agent_thread(&args[2..]),
         "workflow" => {

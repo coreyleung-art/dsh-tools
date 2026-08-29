@@ -821,3 +821,85 @@ pub fn restart_guard(args: &[String]) -> i32 {
         0
     }
 }
+
+/// restart-gate — 统一重启强制门（R011 v2）
+/// 组合：① restart-guard 静态检查（插件完整性）② restart-stress-test 动态压测（boot 冒烟 N 轮）
+/// 任一环节 FAIL → exit 1 禁止重启；全 PASS → exit 0 可重启
+/// 用法: dsh-tools restart-gate [--rounds 3] [--hold 8] [--skip-stress] [--checks-dir D]
+pub fn restart_gate(args: &[String]) -> i32 {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut rounds = 3i32;
+    let mut hold = 8i32;
+    let mut skip_stress = false;
+    let mut checks_dir = String::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--rounds" => { i += 1; if i < args.len() { rounds = args[i].parse().unwrap_or(3); } }
+            "--hold" => { i += 1; if i < args.len() { hold = args[i].parse().unwrap_or(8); } }
+            "--skip-stress" => { skip_stress = true; }
+            "--checks-dir" => { i += 1; if i < args.len() { checks_dir = args[i].clone(); } }
+            s if !s.starts_with('-') => { dirs.push(s.to_string()); }
+            _ => {}
+        }
+        i += 1;
+    }
+    // 默认插件列表（mac-mini 三插件）
+    if dirs.is_empty() {
+        dirs = vec![
+            "/Users/coreyleung/dsh-plugin-central-inbox".to_string(),
+            "/Users/coreyleung/dsh-plugin-agent-bus".to_string(),
+            "/Users/coreyleung/dsh-plugin-openchronicle".to_string(),
+        ];
+    }
+    println!("══ restart-gate 统一重启强制门（R011 v2）══");
+    println!("阶段 1/2: restart-guard 静态检查（{} 插件）", dirs.len());
+
+    // 阶段 1: 静态检查（复用 restart_guard 逻辑，收集结果不退出）
+    let mut all_args = dirs.clone();
+    if !checks_dir.is_empty() { all_args.push("--checks-dir".into()); all_args.push(checks_dir.clone()); }
+    let static_code = restart_guard(&all_args);
+    let static_pass = static_code == 0;
+
+    // 阶段 2: 动态压测
+    let mut stress_pass = true;
+    if !skip_stress && static_pass {
+        println!("阶段 2/2: restart-stress-test 动态压测（{} 轮 × {}s）", rounds, hold);
+        let stress_script = "/Users/coreyleung/dsh-collab/scripts/restart-stress-test.py";
+        let port = 3110;
+        let out = std::process::Command::new("python3")
+            .arg(stress_script)
+            .arg("--rounds").arg(rounds.to_string())
+            .arg("--hold").arg(hold.to_string())
+            .arg("--port-start").arg(port.to_string())
+            .output();
+        match out {
+            Ok(o) => {
+                let txt = String::from_utf8_lossy(&o.stdout).to_string();
+                // 打印压测输出尾部（汇总）
+                for line in txt.lines().rev().take(8) {
+                    println!("  {}", line);
+                }
+                stress_pass = o.status.success();
+            }
+            Err(e) => {
+                println!("  ⚠️ 压测脚本不可用: {}", e);
+                stress_pass = false;
+            }
+        }
+    } else if skip_stress {
+        println!("阶段 2: 已跳过（--skip-stress）");
+    }
+
+    // 汇总
+    println!("══ restart-gate 汇总 ══");
+    println!("  静态检查: {}", if static_pass { "✅ PASS" } else { "❌ FAIL" });
+    println!("  动态压测: {}", if skip_stress { "⏭️ 跳过" } else if stress_pass { "✅ PASS" } else { "❌ FAIL" });
+    if static_pass && (skip_stress || stress_pass) {
+        println!("✅ restart-gate 通过：可安全重启（R011 v2）");
+        0
+    } else {
+        println!("❌ restart-gate 未通过：禁止重启（修复后重跑）");
+        1
+    }
+}

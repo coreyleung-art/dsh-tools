@@ -1,3 +1,9 @@
+## v1.11.0 (2026-08-29)
+- **新增 restart-gate 统一重启强制门（R011 v2）**: dsh-tools restart-gate
+  - 阶段 1: restart-guard 静态检查（插件完整性）
+  - 阶段 2: restart-stress-test 动态压测（boot 冒烟 N 轮，100% PASS 才过）
+  - 任一 FAIL → exit 1 禁止重启；全 PASS → exit 0
+  - 参数: --rounds/--hold/--skip-stress/--checks-dir
 ## v1.10.0 (2026-08-29)
 - **新增 restart-guard 重启强制门（R011）**: dsh-tools restart-guard <插件目录>...
   - CLD/DSH 重启前沙箱模拟：deploy-check 全量检测 + 重启专属 4 项（type:module 匹配/ESM 导入完整性/符号链接/模块加载实测）
