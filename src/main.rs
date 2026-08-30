@@ -20,6 +20,7 @@ mod health_check;
 mod channel_audit;
 mod noise_report;
 mod signature;
+mod load_gate;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -563,6 +564,9 @@ fn main() {
         }
         "sign" => {
             std::process::exit(signature::cli(&args[2..]));
+        }
+        "load-gate" => {
+            std::process::exit(load_gate::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
