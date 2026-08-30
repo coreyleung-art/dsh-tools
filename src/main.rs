@@ -22,6 +22,7 @@ mod noise_report;
 mod signature;
 mod load_gate;
 mod queue_drain;
+mod queue_condense;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -571,6 +572,9 @@ fn main() {
         }
         "queue-drain" => {
             std::process::exit(queue_drain::run(&args[2..]));
+        }
+        "queue-condense" => {
+            std::process::exit(queue_condense::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
