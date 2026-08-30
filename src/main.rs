@@ -18,6 +18,8 @@ mod repo;
 mod ledger;
 mod health_check;
 mod channel_audit;
+mod noise_report;
+mod signature;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -497,6 +499,7 @@ fn main() {
         println!("  ledger [--json] [--repo 路径]  # 工具台账自动化（扫 git tag + 漂移检测）");
         println!("  health health-check|upgrade-status|pitfall query|add  # 插件健康+踩坑档案（吸收 i9）");
         println!("  channel-audit [--hours N] [--json]  # 通道卫生巡检（定向消息误走广播检测，自纠错）");
+        println!("  noise report|scan  # 无关消息反馈链（R018：端侧反馈→HR 捕获网治理）");
         return;
     }
     match args[1].as_str() {
@@ -554,6 +557,12 @@ fn main() {
         }
         "channel-audit" => {
             std::process::exit(channel_audit::run(&args[2..]));
+        }
+        "noise" => {
+            std::process::exit(noise_report::run(&args[2..]));
+        }
+        "sign" => {
+            std::process::exit(signature::cli(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
