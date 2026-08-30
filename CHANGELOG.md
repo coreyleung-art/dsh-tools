@@ -1,3 +1,28 @@
+## [1.17.0] - 2026-08-30
+### 新增
+- **queue-condense**：堆积队列语义浓缩（去重→bge-m3 聚类→qwen 归纳→写黑板+通知会话，Rust 版字节级 chunked 解析）
+
+## [1.16.0] - 2026-08-30
+### 新增
+- **queue-drain**：堆积风暴抽走（扫描/抽走/汇总，备份保留可恢复）
+
+## [1.15.0] - 2026-08-30
+### 新增
+- **load-gate**：资源总控门（本机磁盘/内存 + 服务器 SSH 探活 → 绿黄红门禁）
+
+## [1.14.0] - 2026-08-30
+### 新增
+- **channel-audit**：通道卫生巡检（定向消息误走广播检测）
+- **noise report/scan**：R018 无关消息反馈链
+
+## [1.13.1] - 2026-08-30
+### 新增
+- restart-gate --post-health（升级后自动 health-check 确认）
+
+## [1.13.0] - 2026-08-30
+### 新增
+- **health** 子命令族（health-check/upgrade-status/pitfall query/add，吸收 i9 health-check 插件 Rust 化）
+
 ## v1.12.0 (2026-08-29)
 - **restart-gate v3**: 新增阶段 0 隔离小样本验证（cld-shell-sandbox-test，不动生产）
   - 三阶段：0=隔离小样本（壳行为/模式对话框/KeepAlive）→ 1=静态检查 → 2=动态压测
