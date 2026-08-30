@@ -21,6 +21,7 @@ mod channel_audit;
 mod noise_report;
 mod signature;
 mod load_gate;
+mod queue_drain;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -567,6 +568,9 @@ fn main() {
         }
         "load-gate" => {
             std::process::exit(load_gate::run(&args[2..]));
+        }
+        "queue-drain" => {
+            std::process::exit(queue_drain::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
