@@ -69,7 +69,7 @@ fn dsh_version(runtime: &Path) -> String {
 
 // ── ① health-check（i9 plugin_health）──
 
-fn run_health_check() -> Value {
+pub fn run_health_check() -> Value {
     let runtime = find_runtime();
     let profile = profile_nm();
     let mut checks: Vec<Value> = Vec::new();

@@ -832,6 +832,7 @@ pub fn restart_gate(args: &[String]) -> i32 {
     let mut hold = 8i32;
     let mut skip_stress = false;
     let mut skip_sandbox = false;
+    let mut post_health = false;
     let mut checks_dir = String::new();
     let mut i = 0;
     while i < args.len() {
@@ -840,6 +841,7 @@ pub fn restart_gate(args: &[String]) -> i32 {
             "--hold" => { i += 1; if i < args.len() { hold = args[i].parse().unwrap_or(8); } }
             "--skip-stress" => { skip_stress = true; }
             "--skip-sandbox" => { skip_sandbox = true; }
+            "--post-health" => { post_health = true; }
             "--checks-dir" => { i += 1; if i < args.len() { checks_dir = args[i].clone(); } }
             s if !s.starts_with('-') => { dirs.push(s.to_string()); }
             _ => {}
@@ -927,6 +929,28 @@ pub fn restart_gate(args: &[String]) -> i32 {
     println!("  动态压测: {}", if skip_stress { "⏭️ 跳过" } else if stress_pass { "✅ PASS" } else { "❌ FAIL" });
     if sandbox_pass && static_pass && (skip_stress || stress_pass) {
         println!("✅ restart-gate 通过：可安全重启（R011 v3）");
+        // 阶段 3（可选）：升级后 health-check 确认（--post-health）
+        if post_health {
+            println!("阶段 3/3: health-check 升级后确认（--post-health）");
+            let hc = crate::health_check::run_health_check();
+            let ok = hc.get("all_ok").and_then(|o| o.as_bool()).unwrap_or(false);
+            let dsv = hc.get("dsh_version").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            println!("  dsh 版本: {} | 插件数: {}", dsv,
+                hc.get("plugins_found").and_then(|p| p.as_u64()).unwrap_or(0));
+            if let Some(checks) = hc.get("checks").and_then(|c| c.as_array()) {
+                for c in checks {
+                    let name = c.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                    let cok = c.get("ok").and_then(|o| o.as_bool()).unwrap_or(false);
+                    let detail = c.get("detail").and_then(|d| d.as_str()).unwrap_or("").to_string();
+                    println!("  {} {} | {}", if cok { "✅" } else { "❌" }, name, detail.chars().take(60).collect::<String>());
+                }
+            }
+            if ok {
+                println!("✅ 升级后健康确认通过（all_ok=true）");
+            } else {
+                println!("⚠️ 升级后健康确认存在异常（all_ok=false），请检查上方 ❌ 项");
+            }
+        }
         0
     } else {
         println!("❌ restart-gate 未通过：禁止重启（修复后重跑）");
