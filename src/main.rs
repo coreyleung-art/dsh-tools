@@ -16,6 +16,7 @@ mod deploy_check;
 mod version;
 mod repo;
 mod ledger;
+mod health_check;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -493,6 +494,7 @@ fn main() {
         println!("  version --type fix|feat|breaking --desc '描述' [--repo 路径] [--dry-run]  # 自动化版本管理");
         println!("  repo setup/push/sync/status  # GitHub/Gitee 双仓与版本全链路");
         println!("  ledger [--json] [--repo 路径]  # 工具台账自动化（扫 git tag + 漂移检测）");
+        println!("  health health-check|upgrade-status|pitfall query|add  # 插件健康+踩坑档案（吸收 i9）");
         return;
     }
     match args[1].as_str() {
@@ -544,6 +546,9 @@ fn main() {
         }
         "ledger" => {
             std::process::exit(ledger::run(&args[2..]));
+        }
+        "health" => {
+            std::process::exit(health_check::run(&args[2..]));
         }
         other => println!("未知子命令: {}", other),
     }
